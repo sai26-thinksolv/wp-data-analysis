@@ -4,6 +4,7 @@ import sys
 import csv
 import re
 import asyncio
+import json
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
 from typing import Optional
@@ -26,6 +27,8 @@ def get_config():
     return {
         'input_file': r"sample.csv",
         'output_file': r"processed.csv",
+        'checkpoint_file': r"checkpoint.json",
+        'batch_save_interval': 5,  # Save progress every N domains
         'MAX_PAGES_PER_DOMAIN': 250,
         'MAX_CONCURRENCY': 20,
         'REQUEST_TIMEOUT_SECONDS': 12,
@@ -344,68 +347,129 @@ async def crawl_domain(session, domain: str, config: dict) -> SiteScrapeResult:
 async def process_domains(domains, config):
     """Process all domains and return results"""
     results = []
+    checkpoint_file = config['checkpoint_file']
+    batch_save_interval = config['batch_save_interval']
+    checkpoint_data = {}
+    
+    if os.path.exists(checkpoint_file):
+        with open(checkpoint_file, 'r') as f:
+            checkpoint_data = json.load(f)
+    
+    processed_domains = checkpoint_data.get('processed_domains', [])
+    failed_domains = checkpoint_data.get('failed_domains', [])
+    next_domain_index = checkpoint_data.get('next_domain_index', 0)
     
     async with aiohttp.ClientSession() as session:
-        for i, domain in enumerate(domains, 1):
-            print(f"Processing {i}/{len(domains)}: {domain}")
+        for i, domain in enumerate(domains[next_domain_index:], next_domain_index):
+            if domain in processed_domains or domain in failed_domains:
+                continue
             
-            # These functions are synchronous and can be called directly
-            workspace = check_workspace(domain)
-            country, created, updated = get_whois(domain)
-           
-            # Call the async crawl_domain function using await
-            crawl_result = await crawl_domain(session, domain, config)
+            print(f"Processing {i+1}/{len(domains)}: {domain}")
+            
+            try:
+                # These functions are synchronous and can be called directly
+                workspace = check_workspace(domain)
+                country, created, updated = get_whois(domain)
+               
+                # Call the async crawl_domain function using await
+                crawl_result = await crawl_domain(session, domain, config)
 
-            emails_out = "; ".join(sorted(crawl_result.emails)[:config['MAX_EMAILS_IN_OUTPUT']]) if crawl_result.emails else "NA"
-            socials_out = "; ".join(sorted(crawl_result.socials)[:config['MAX_SOCIALS_IN_OUTPUT']]) if crawl_result.socials else "NA"
+                emails_out = "; ".join(sorted(crawl_result.emails)[:config['MAX_EMAILS_IN_OUTPUT']]) if crawl_result.emails else "NA"
+                socials_out = "; ".join(sorted(crawl_result.socials)[:config['MAX_SOCIALS_IN_OUTPUT']]) if crawl_result.socials else "NA"
 
-            # Get WordPress posts and pages data
-            posts_data = get_last_wp_entry(domain, "posts")
-            pages_data = get_last_wp_entry(domain, "pages")
+                # Get WordPress posts and pages data
+                posts_data = get_last_wp_entry(domain, "posts")
+                pages_data = get_last_wp_entry(domain, "pages")
 
-            # Prepare posts columns
-            posts_api_status = posts_data["status"]
-            posts_last_created_link = posts_data["last_created"]["link"] if posts_data["last_created"] else "NA"
-            posts_last_created_title = posts_data["last_created"]["title"] if posts_data["last_created"] else "NA"
-            posts_last_created_date = posts_data["last_created"]["date"] if posts_data["last_created"] else "NA"
-            posts_last_modified_title = posts_data["last_modified"]["title"] if posts_data["last_modified"] else "NA"
-            posts_last_modified_date = posts_data["last_modified"]["modified"] if posts_data["last_modified"] else "NA"
+                # Prepare posts columns
+                posts_api_status = posts_data["status"]
+                posts_last_created_link = posts_data["last_created"]["link"] if posts_data["last_created"] else "NA"
+                posts_last_created_title = posts_data["last_created"]["title"] if posts_data["last_created"] else "NA"
+                posts_last_created_date = posts_data["last_created"]["date"] if posts_data["last_created"] else "NA"
+                posts_last_modified_title = posts_data["last_modified"]["title"] if posts_data["last_modified"] else "NA"
+                posts_last_modified_date = posts_data["last_modified"]["modified"] if posts_data["last_modified"] else "NA"
 
-            # Prepare pages columns
-            pages_api_status = pages_data["status"]
-            pages_last_created_link = pages_data["last_created"]["link"] if pages_data["last_created"] else "NA"
-            pages_last_created_title = pages_data["last_created"]["title"] if pages_data["last_created"] else "NA"
-            pages_last_created_date = pages_data["last_created"]["date"] if pages_data["last_created"] else "NA"
-            pages_last_modified_title = pages_data["last_modified"]["title"] if pages_data["last_modified"] else "NA"
-            pages_last_modified_date = pages_data["last_modified"]["modified"] if pages_data["last_modified"] else "NA"
+                # Prepare pages columns
+                pages_api_status = pages_data["status"]
+                pages_last_created_link = pages_data["last_created"]["link"] if pages_data["last_created"] else "NA"
+                pages_last_created_title = pages_data["last_created"]["title"] if pages_data["last_created"] else "NA"
+                pages_last_created_date = pages_data["last_created"]["date"] if pages_data["last_created"] else "NA"
+                pages_last_modified_title = pages_data["last_modified"]["title"] if pages_data["last_modified"] else "NA"
+                pages_last_modified_date = pages_data["last_modified"]["modified"] if pages_data["last_modified"] else "NA"
 
-            results.append({
-                "Domain": domain,
-                "Google Workspace": workspace,
-                "Country of Origin": country,
-                "Domain Created": created,
-                "Domain Last Modified": updated,
-                "Pages Crawled (Count)": crawl_result.pages_crawled,
-                "Has Contact Form": "Yes" if crawl_result.has_contact_form else "No",
-                "Emails (unique)": emails_out,
-                "Social Links (unique)": socials_out,
-                "Contact Page Link": crawl_result.contact_page_link or "NA",
-                "About Page Link": crawl_result.about_page_link or "NA",
-                "Posts API Status": posts_api_status,
-                "Posts Last Created Title": posts_last_created_title,
-                "Posts Last Created Link": posts_last_created_link,
-                "Posts Last Created Date": posts_last_created_date,
-                "Posts Last Modified Title": posts_last_modified_title,
-                "Posts Last Modified Date": posts_last_modified_date,
-                "Pages API Status": pages_api_status,
-                "Pages Last Created Title": pages_last_created_title,
-                "Pages Last Created Link": pages_last_created_link,
-                "Pages Last Created Date": pages_last_created_date,
-                "Pages Last Modified Title": pages_last_modified_title,
-                "Pages Last Modified Date": pages_last_modified_date
-            })
+                results.append({
+                    "Domain": domain,
+                    "Google Workspace": workspace,
+                    "Country of Origin": country,
+                    "Domain Created": created,
+                    "Domain Last Modified": updated,
+                    "Pages Crawled (Count)": crawl_result.pages_crawled,
+                    "Has Contact Form": "Yes" if crawl_result.has_contact_form else "No",
+                    "Emails (unique)": emails_out,
+                    "Social Links (unique)": socials_out,
+                    "Contact Page Link": crawl_result.contact_page_link or "NA",
+                    "About Page Link": crawl_result.about_page_link or "NA",
+                    "Posts API Status": posts_api_status,
+                    "Posts Last Created Title": posts_last_created_title,
+                    "Posts Last Created Link": posts_last_created_link,
+                    "Posts Last Created Date": posts_last_created_date,
+                    "Posts Last Modified Title": posts_last_modified_title,
+                    "Posts Last Modified Date": posts_last_modified_date,
+                    "Pages API Status": pages_api_status,
+                    "Pages Last Created Title": pages_last_created_title,
+                    "Pages Last Created Link": pages_last_created_link,
+                    "Pages Last Created Date": pages_last_created_date,
+                    "Pages Last Modified Title": pages_last_modified_title,
+                    "Pages Last Modified Date": pages_last_modified_date
+                })
+                
+                # Mark as successfully processed
+                processed_domains.append(domain)
+                print(f"✅ Successfully processed {domain}")
+                
+            except Exception as e:
+                print(f"❌ Error processing {domain}: {e}")
+                # Mark as failed but still track progress
+                failed_domains.append(domain)
+                print(f"⚠️ Marked {domain} as failed, will not retry")
+            
+            # Update checkpoint data regardless of success/failure
+            checkpoint_data['processed_domains'] = processed_domains
+            checkpoint_data['failed_domains'] = failed_domains
+            checkpoint_data['next_domain_index'] = i + 1
+            checkpoint_data['last_updated'] = datetime.now().isoformat()
+            
+            # Save checkpoint and results at regular intervals
+            if (i + 1) % batch_save_interval == 0:
+                with open(checkpoint_file, 'w') as f:
+                    json.dump(checkpoint_data, f, indent=2)
+                if results:  # Only save if there are successful results
+                    save_results(results, config['output_file'])
+                    results = []
+                print(f"💾 Checkpoint saved at domain {i+1} (Success: {len(processed_domains)}, Failed: {len(failed_domains)})")
     
-    return results
+    # Save any remaining results
+    if results:
+        save_results(results, config['output_file'])
+    
+    # Final checkpoint save
+    with open(checkpoint_file, 'w') as f:
+        json.dump(checkpoint_data, f, indent=2)
+    
+    # Summary
+    total_processed = len(processed_domains) + len(failed_domains)
+    print(f"\n📊 Processing Summary:")
+    print(f"   ✅ Successful: {len(processed_domains)}")
+    print(f"   ❌ Failed: {len(failed_domains)}")
+    print(f"   📈 Total processed: {total_processed}/{len(domains)}")
+    
+    # Clean up checkpoint if all domains processed
+    #if total_processed >= len(domains):
+        #try:
+            #os.remove(checkpoint_file)
+            #print("🧹 Checkpoint file cleaned up - processing complete!")
+        #except:
+            #pass
 
 # ---------- Save Results Function ----------
 def save_results(results, output_file):
@@ -433,8 +497,7 @@ async def main():
     """Main execution function"""
     config = get_config()
     domains = validate_and_load_data(config['input_file'])
-    results = await process_domains(domains, config)
-    save_results(results, config['output_file'])
+    await process_domains(domains, config)
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
