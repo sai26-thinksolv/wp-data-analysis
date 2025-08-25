@@ -5,6 +5,7 @@ import csv
 import re
 import asyncio
 import json
+import signal
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
 from typing import Optional
@@ -23,12 +24,13 @@ except ImportError:
     sys.exit(1)
 
 # ---------- Configuration ----------
-def get_config():
-    """Return configuration settings"""
-    return {
+def get_config(preset: str = "balanced"):
+    """Return configuration settings with performance presets"""
+    base_config = {
         'input_file': r"sample.csv",
         'output_file': r"processed.csv",
         'checkpoint_file': r"checkpoint.json",
+        'shutdown_file': r"stop_processing.txt",
         'batch_save_interval': 5,  # Save progress every N domains
         'MAX_PAGES_PER_DOMAIN': 250,
         'MAX_CONCURRENCY': 20,
@@ -38,8 +40,91 @@ def get_config():
         'MAX_EMAILS_IN_OUTPUT': 10,
         'MAX_SOCIALS_IN_OUTPUT': 15,
         'COMMON_PAGES': ["", "contact", "contact-us", "support", "help", "about", "about-us", "team"],
-        'SOCIAL_DOMAINS': ["facebook.com", "linkedin.com", "twitter.com", "x.com", "instagram.com"]
+        'SOCIAL_DOMAINS': ["facebook.com", "linkedin.com", "twitter.com", "x.com", "instagram.com"],
+        
+        # Feature flags - enable/disable specific operations
+        'ENABLE_WHOIS': True,
+        'ENABLE_DNS_MX': True,
+        'ENABLE_CRAWLING': True,
+        'ENABLE_WORDPRESS_API': True,
+        'ENABLE_POSTS_API': True,
+        'ENABLE_PAGES_API': True,
+        
+        # Output format options
+        'OUTPUT_FORMAT': 'csv',  # 'csv', 'json', 'jsonl', 'sqlite'
+        'OUTPUT_COMPRESSION': None,  # None, 'gzip', 'bz2'
+        
+        # Record update behavior
+        'UPDATE_EXISTING_RECORDS': True,  # Merge new data with existing records
+        'FORCE_REPROCESS': False,  # Ignore checkpoint and process all domains
+        
+        # Shutdown check interval (seconds)
+        'SHUTDOWN_CHECK_INTERVAL': 1.0
     }
+    
+    # Performance presets
+    if preset == "speed":
+        base_config.update({
+            'MAX_CONCURRENCY': 50,
+            'REQUEST_TIMEOUT_SECONDS': 8,
+            'MAX_PAGES_PER_DOMAIN': 50,
+            'ENABLE_WHOIS': False,  # Disable slow WHOIS lookups
+            'ENABLE_PAGES_API': False,  # Only check posts, not pages
+            'batch_save_interval': 10,
+            'MAX_EMAILS_IN_OUTPUT': 5,
+            'MAX_SOCIALS_IN_OUTPUT': 8,
+            'COMMON_PAGES': ["", "contact", "about"]  # Fewer pages to crawl
+        })
+    elif preset == "complete":
+        base_config.update({
+            'MAX_CONCURRENCY': 10,
+            'REQUEST_TIMEOUT_SECONDS': 20,
+            'MAX_PAGES_PER_DOMAIN': 500,
+            'batch_save_interval': 3,
+            'MAX_EMAILS_IN_OUTPUT': 20,
+            'MAX_SOCIALS_IN_OUTPUT': 25,
+            'COMMON_PAGES': ["", "contact", "contact-us", "support", "help", "about", "about-us", "team", "services", "blog", "news"]
+        })
+    # "balanced" preset uses base_config as-is
+    
+    return base_config
+
+# ---------- Graceful Shutdown Handler ----------
+class GracefulShutdown:
+    def __init__(self, shutdown_file: str):
+        self.shutdown_requested = False
+        self.shutdown_file = shutdown_file
+        self._setup_signal_handlers()
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except Exception:
+            pass  # Signal handling may not work in all environments (e.g., Jupyter)
+    
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals"""
+        print(f"\n🛑 Received shutdown signal ({signum}). Finishing current batch...")
+        self.shutdown_requested = True
+    
+    def should_shutdown(self) -> bool:
+        """Check if shutdown has been requested via signal or file"""
+        if self.shutdown_requested:
+            return True
+        
+        # Check for shutdown file
+        if os.path.exists(self.shutdown_file):
+            print(f"🛑 Shutdown file '{self.shutdown_file}' detected. Finishing current batch...")
+            self.shutdown_requested = True
+            try:
+                os.remove(self.shutdown_file)
+            except Exception:
+                pass
+            return True
+        
+        return False
 
 # ---------- Data Validation ----------
 def validate_and_load_data(input_file):
@@ -361,10 +446,19 @@ async def process_domains(domains, config):
     failed_domains = checkpoint_data.get('failed_domains', [])
     next_domain_index = checkpoint_data.get('next_domain_index', 0)
     
+    shutdown_handler = GracefulShutdown(config['shutdown_file'])
+    
     async with aiohttp.ClientSession() as session:
         for i, domain in enumerate(domains[next_domain_index:], next_domain_index):
-            if domain in processed_domains or domain in failed_domains:
-                continue
+            # Skip domains only if not forcing reprocess
+            if not config.get('FORCE_REPROCESS', False):
+                if domain in processed_domains or domain in failed_domains:
+                    continue
+            
+            # Check for shutdown at the beginning of each iteration
+            if shutdown_handler.should_shutdown():
+                print(f"🛑 Shutdown requested. Stopping at domain {i+1}/{len(domains)}")
+                break
             
             domain_start_time = time.time()
             print(f"Processing {i+1}/{len(domains)}: {domain}")
@@ -372,13 +466,13 @@ async def process_domains(domains, config):
             try:
                 # WHOIS and DNS timing
                 whois_start = time.time()
-                workspace = check_workspace(domain)
-                country, created, updated = get_whois(domain)
+                workspace = check_workspace(domain) if config['ENABLE_DNS_MX'] else "NA"
+                country, created, updated = get_whois(domain) if config['ENABLE_WHOIS'] else ("NA","NA","NA")
                 whois_dns_time = time.time() - whois_start
                
                 # Crawling timing
                 crawl_start = time.time()
-                crawl_result = await crawl_domain(session, domain, config)
+                crawl_result = await crawl_domain(session, domain, config) if config['ENABLE_CRAWLING'] else SiteScrapeResult()
                 crawl_time = time.time() - crawl_start
 
                 emails_out = "; ".join(sorted(crawl_result.emails)[:config['MAX_EMAILS_IN_OUTPUT']]) if crawl_result.emails else "NA"
@@ -386,8 +480,8 @@ async def process_domains(domains, config):
 
                 # WordPress API timing
                 wp_start = time.time()
-                posts_data = get_last_wp_entry(domain, "posts")
-                pages_data = get_last_wp_entry(domain, "pages")
+                posts_data = get_last_wp_entry(domain, "posts") if (config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']) else {"status": "disabled", "last_created": None, "last_modified": None}
+                pages_data = get_last_wp_entry(domain, "pages") if (config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']) else {"status": "disabled", "last_created": None, "last_modified": None}
                 wp_time = time.time() - wp_start
 
                 # Prepare posts columns
@@ -435,7 +529,17 @@ async def process_domains(domains, config):
                 # Mark as successfully processed
                 processed_domains.append(domain)
                 total_time = time.time() - domain_start_time
-                print(f"✅ Successfully processed {domain} in {total_time:.2f}s (WHOIS/DNS: {whois_dns_time:.2f}s, Crawl: {crawl_time:.2f}s, WP: {wp_time:.2f}s)")
+                
+                # Show which operations were performed
+                ops_performed = []
+                if config['ENABLE_DNS_MX']: ops_performed.append("DNS")
+                if config['ENABLE_WHOIS']: ops_performed.append("WHOIS")
+                if config['ENABLE_CRAWLING']: ops_performed.append("Crawl")
+                if config['ENABLE_WORDPRESS_API'] and (config['ENABLE_POSTS_API'] or config['ENABLE_PAGES_API']): 
+                    ops_performed.append("WP-API")
+                
+                ops_str = f" [{', '.join(ops_performed)}]" if ops_performed else ""
+                print(f"✅ Successfully processed {domain} in {total_time:.2f}s{ops_str} (WHOIS/DNS: {whois_dns_time:.2f}s, Crawl: {crawl_time:.2f}s, WP: {wp_time:.2f}s)")
                 
             except Exception as e:
                 total_time = time.time() - domain_start_time
@@ -455,13 +559,13 @@ async def process_domains(domains, config):
                 with open(checkpoint_file, 'w') as f:
                     json.dump(checkpoint_data, f, indent=2)
                 if results:  # Only save if there are successful results
-                    save_results(results, config['output_file'])
+                    save_results(results, config)
                     results = []
                 print(f"💾 Checkpoint saved at domain {i+1} (Success: {len(processed_domains)}, Failed: {len(failed_domains)})")
     
     # Save any remaining results
     if results:
-        save_results(results, config['output_file'])
+        save_results(results, config)
     
     # Final checkpoint save
     with open(checkpoint_file, 'w') as f:
@@ -494,6 +598,16 @@ async def process_domains(domains, config):
         domains_per_minute = domains_per_second * 60
         print(f"   🚀 Processing rate: {domains_per_minute:.1f} domains/minute ({domains_per_second:.2f} domains/second)")
     
+    # Show configuration summary
+    enabled_features = []
+    if config['ENABLE_DNS_MX']: enabled_features.append("DNS MX")
+    if config['ENABLE_WHOIS']: enabled_features.append("WHOIS")
+    if config['ENABLE_CRAWLING']: enabled_features.append("Crawling")
+    if config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']: enabled_features.append("Posts API")
+    if config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']: enabled_features.append("Pages API")
+    
+    print(f"   🔧 Features enabled: {', '.join(enabled_features)}")
+    
     # Clean up checkpoint if all domains processed
     #if total_processed >= len(domains):
         #try:
@@ -503,10 +617,17 @@ async def process_domains(domains, config):
             #pass
 
 # ---------- Save Results Function ----------
-def save_results(results, output_file):
-    """Save results to CSV file"""
+def save_results(results, config):
+    """Save results in the specified output format with update capability"""
+    if not results:
+        return
+        
+    output_file = config['output_file']
+    output_format = config.get('OUTPUT_FORMAT', 'csv').lower()
+    update_existing = config.get('UPDATE_EXISTING_RECORDS', True)
+    
     try:
-        out_df = pd.DataFrame(results)
+        new_df = pd.DataFrame(results)
         expected_cols = [
             "Domain",
             "Google Workspace","Country of Origin","Domain Created","Domain Last Modified",
@@ -516,20 +637,197 @@ def save_results(results, output_file):
             "Pages API Status","Pages Last Created Title","Pages Last Created Link","Pages Last Created Date","Pages Last Modified Title","Pages Last Modified Date"
         ]
         for col in expected_cols:
-            if col not in out_df.columns: out_df[col] = "NA"
-        out_df = out_df[expected_cols]
-        out_df.to_csv(output_file, index=False, quoting=csv.QUOTE_MINIMAL)
-        print(f"✅ Results saved to {output_file}")
+            if col not in new_df.columns: new_df[col] = "NA"
+        new_df = new_df[expected_cols]
+        
+        if output_format == 'csv':
+            file_exists = os.path.exists(output_file)
+            
+            if update_existing and file_exists:
+                # Read existing data and merge
+                try:
+                    existing_df = pd.read_csv(output_file)
+                    # Merge new data with existing, updating records by Domain
+                    merged_df = merge_domain_records(existing_df, new_df)
+                    merged_df.to_csv(output_file, index=False, quoting=csv.QUOTE_MINIMAL)
+                    print(f"✅ Results updated in {output_file} ({output_format.upper()} format) - {len(new_df)} records processed")
+                except Exception as e:
+                    print(f"⚠️ Error reading existing file for update: {e}. Appending instead.")
+                    new_df.to_csv(output_file, index=False, mode='a', header=False, quoting=csv.QUOTE_MINIMAL)
+            else:
+                # Append mode for incremental saving
+                new_df.to_csv(output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+                print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
+            
+        elif output_format == 'json':
+            # For JSON, read existing data and merge
+            existing_data = []
+            if os.path.exists(output_file):
+                try:
+                    with open(output_file, 'r') as f:
+                        existing_data = json.load(f)
+                except:
+                    existing_data = []
+            
+            if update_existing and existing_data:
+                # Convert to DataFrame for merging
+                existing_df = pd.DataFrame(existing_data)
+                merged_df = merge_domain_records(existing_df, new_df)
+                final_data = merged_df.to_dict('records')
+            else:
+                final_data = existing_data + new_df.to_dict('records')
+            
+            with open(output_file, 'w') as f:
+                json.dump(final_data, f, indent=2, default=str)
+            print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
+                
+        elif output_format == 'jsonl':
+            # For JSONL, we need to read all lines, merge, and rewrite
+            if update_existing and os.path.exists(output_file):
+                existing_records = []
+                try:
+                    with open(output_file, 'r') as f:
+                        for line in f:
+                            if line.strip():
+                                existing_records.append(json.loads(line))
+                    
+                    existing_df = pd.DataFrame(existing_records)
+                    merged_df = merge_domain_records(existing_df, new_df)
+                    
+                    # Rewrite the entire file
+                    with open(output_file, 'w') as f:
+                        for record in merged_df.to_dict('records'):
+                            f.write(json.dumps(record, default=str) + '\n')
+                    print(f"✅ Results updated in {output_file} ({output_format.upper()} format)")
+                except Exception as e:
+                    print(f"⚠️ Error updating JSONL file: {e}. Appending instead.")
+                    with open(output_file, 'a') as f:
+                        for record in new_df.to_dict('records'):
+                            f.write(json.dumps(record, default=str) + '\n')
+            else:
+                # Append mode
+                with open(output_file, 'a') as f:
+                    for record in new_df.to_dict('records'):
+                        f.write(json.dumps(record, default=str) + '\n')
+                print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
+                    
+        elif output_format == 'sqlite':
+            import sqlite3
+            db_file = output_file.replace('.csv', '.db') if output_file.endswith('.csv') else output_file + '.db'
+            conn = sqlite3.connect(db_file)
+            
+            if update_existing:
+                # Use REPLACE to update existing records
+                new_df.to_sql('domains', conn, if_exists='replace', index=False, method='multi')
+            else:
+                new_df.to_sql('domains', conn, if_exists='append', index=False)
+            
+            conn.close()
+            output_file = db_file  # Update for logging
+            print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
+            
+        else:
+            # Fallback to CSV
+            file_exists = os.path.exists(output_file)
+            new_df.to_csv(output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+            print(f"✅ Results saved to {output_file} (CSV format)")
+        
     except Exception as e:
         print(f"❌ Error saving results: {e}")
+        # Fallback to CSV append mode
+        try:
+            file_exists = os.path.exists(config['output_file'])
+            new_df.to_csv(config['output_file'], index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+            print(f"✅ Fallback: Results saved to {config['output_file']} (CSV format)")
+        except Exception as e2:
+            print(f"❌ Critical error: Could not save results: {e2}")
+
+def merge_domain_records(existing_df, new_df):
+    """Merge new domain records with existing ones, updating fields that have new data"""
+    if existing_df.empty:
+        return new_df
+    
+    if new_df.empty:
+        return existing_df
+    
+    # Ensure both DataFrames have the same columns
+    all_cols = list(set(existing_df.columns) | set(new_df.columns))
+    for col in all_cols:
+        if col not in existing_df.columns:
+            existing_df[col] = "NA"
+        if col not in new_df.columns:
+            new_df[col] = "NA"
+    
+    # Reorder columns to match
+    existing_df = existing_df[all_cols]
+    new_df = new_df[all_cols]
+    
+    # Create a merged DataFrame
+    merged_df = existing_df.copy()
+    
+    for _, new_row in new_df.iterrows():
+        domain = new_row['Domain']
+        existing_mask = merged_df['Domain'] == domain
+        
+        if existing_mask.any():
+            # Update existing record - only update fields that are not "NA" or "disabled" in new data
+            existing_idx = merged_df[existing_mask].index[0]
+            for col in new_df.columns:
+                if col != 'Domain':  # Don't update the domain name itself
+                    new_value = new_row[col]
+                    # Update if new value is not NA/disabled and is different from existing
+                    if (new_value not in ["NA", "disabled", ""] and 
+                        str(new_value).strip() != "" and 
+                        new_value != merged_df.loc[existing_idx, col]):
+                        merged_df.loc[existing_idx, col] = new_value
+        else:
+            # Add new record
+            merged_df = pd.concat([merged_df, new_row.to_frame().T], ignore_index=True)
+    
+    return merged_df
 
 # ---------- Main Execution Function ----------
-async def main():
-    """Main execution function"""
-    config = get_config()
+async def main(preset: str = "balanced", custom_config: dict = None):
+    """Main execution function with preset support"""
+    config = get_config(preset)
+    
+    # Apply custom configuration overrides if provided
+    if custom_config:
+        config.update(custom_config)
+    
+    print(f"🚀 Starting WordPress Domain Analysis with '{preset}' preset")
+    print(f"📋 Configuration:")
+    print(f"   • Max Concurrency: {config['MAX_CONCURRENCY']}")
+    print(f"   • Request Timeout: {config['REQUEST_TIMEOUT_SECONDS']}s")
+    print(f"   • Batch Save Interval: {config['batch_save_interval']}")
+    print(f"   • Output Format: {config.get('OUTPUT_FORMAT', 'csv').upper()}")
+    print(f"   • Update Existing Records: {'Yes' if config.get('UPDATE_EXISTING_RECORDS', True) else 'No'}")
+    print(f"   • Force Reprocess: {'Yes' if config.get('FORCE_REPROCESS', False) else 'No'}")
+    
+    # Show enabled features
+    enabled_features = []
+    if config['ENABLE_DNS_MX']: enabled_features.append("DNS MX")
+    if config['ENABLE_WHOIS']: enabled_features.append("WHOIS")
+    if config['ENABLE_CRAWLING']: enabled_features.append("Crawling")
+    if config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']: enabled_features.append("Posts API")
+    if config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']: enabled_features.append("Pages API")
+    print(f"   • Features: {', '.join(enabled_features)}")
+    
+    print(f"   • Shutdown file: {config['shutdown_file']} (create this file to stop gracefully)")
+    print()
+    
     domains = validate_and_load_data(config['input_file'])
     await process_domains(domains, config)
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main("balanced", {"ENABLE_WHOIS": False, "ENABLE_CRAWLING": False, "ENABLE_PAGES_API": False}))
+
+    # Run 1: Basic info only
+#await main("balanced", {"ENABLE_WORDPRESS_API": False})
+
+# Run 2: Add WordPress Posts
+#await main("balanced", {"ENABLE_WHOIS": False, "ENABLE_CRAWLING": False, "ENABLE_PAGES_API": False})
+
+# Run 3: Add WordPress Pages  
+#await main("balanced", {"ENABLE_WHOIS": False, "ENABLE_CRAWLING": False, "ENABLE_POSTS_API": False})
