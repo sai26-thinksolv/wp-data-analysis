@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
 from typing import Optional
+import time
 
 import pandas as pd
 import requests
@@ -346,6 +347,7 @@ async def crawl_domain(session, domain: str, config: dict) -> SiteScrapeResult:
 # ---------- Main Processing Function ----------
 async def process_domains(domains, config):
     """Process all domains and return results"""
+    start_time = time.time()
     results = []
     checkpoint_file = config['checkpoint_file']
     batch_save_interval = config['batch_save_interval']
@@ -364,22 +366,29 @@ async def process_domains(domains, config):
             if domain in processed_domains or domain in failed_domains:
                 continue
             
+            domain_start_time = time.time()
             print(f"Processing {i+1}/{len(domains)}: {domain}")
             
             try:
-                # These functions are synchronous and can be called directly
+                # WHOIS and DNS timing
+                whois_start = time.time()
                 workspace = check_workspace(domain)
                 country, created, updated = get_whois(domain)
+                whois_dns_time = time.time() - whois_start
                
-                # Call the async crawl_domain function using await
+                # Crawling timing
+                crawl_start = time.time()
                 crawl_result = await crawl_domain(session, domain, config)
+                crawl_time = time.time() - crawl_start
 
                 emails_out = "; ".join(sorted(crawl_result.emails)[:config['MAX_EMAILS_IN_OUTPUT']]) if crawl_result.emails else "NA"
                 socials_out = "; ".join(sorted(crawl_result.socials)[:config['MAX_SOCIALS_IN_OUTPUT']]) if crawl_result.socials else "NA"
 
-                # Get WordPress posts and pages data
+                # WordPress API timing
+                wp_start = time.time()
                 posts_data = get_last_wp_entry(domain, "posts")
                 pages_data = get_last_wp_entry(domain, "pages")
+                wp_time = time.time() - wp_start
 
                 # Prepare posts columns
                 posts_api_status = posts_data["status"]
@@ -425,10 +434,12 @@ async def process_domains(domains, config):
                 
                 # Mark as successfully processed
                 processed_domains.append(domain)
-                print(f"✅ Successfully processed {domain}")
+                total_time = time.time() - domain_start_time
+                print(f"✅ Successfully processed {domain} in {total_time:.2f}s (WHOIS/DNS: {whois_dns_time:.2f}s, Crawl: {crawl_time:.2f}s, WP: {wp_time:.2f}s)")
                 
             except Exception as e:
-                print(f"❌ Error processing {domain}: {e}")
+                total_time = time.time() - domain_start_time
+                print(f"❌ Error processing {domain} in {total_time:.2f}s: {e}")
                 # Mark as failed but still track progress
                 failed_domains.append(domain)
                 print(f"⚠️ Marked {domain} as failed, will not retry")
@@ -457,11 +468,31 @@ async def process_domains(domains, config):
         json.dump(checkpoint_data, f, indent=2)
     
     # Summary
+    total_processing_time = time.time() - start_time
     total_processed = len(processed_domains) + len(failed_domains)
+    
     print(f"\n📊 Processing Summary:")
     print(f"   ✅ Successful: {len(processed_domains)}")
     print(f"   ❌ Failed: {len(failed_domains)}")
     print(f"   📈 Total processed: {total_processed}/{len(domains)}")
+    print(f"   ⏰ Total time: {total_processing_time:.2f} seconds ({total_processing_time/60:.1f} minutes)")
+    
+    if total_processed > 0:
+        avg_time_per_domain = total_processing_time / total_processed
+        print(f"   📊 Average time per domain: {avg_time_per_domain:.2f} seconds")
+        
+        # Estimate remaining time if not complete
+        remaining_domains = len(domains) - total_processed
+        if remaining_domains > 0:
+            estimated_remaining_time = remaining_domains * avg_time_per_domain
+            print(f"   🔮 Estimated time for remaining {remaining_domains} domains: {estimated_remaining_time/60:.1f} minutes")
+            print(f"   🎯 Estimated completion: {(datetime.now() + timedelta(seconds=estimated_remaining_time)).strftime('%H:%M:%S')}")
+    
+    # Performance rate
+    if total_processing_time > 0:
+        domains_per_second = total_processed / total_processing_time
+        domains_per_minute = domains_per_second * 60
+        print(f"   🚀 Processing rate: {domains_per_minute:.1f} domains/minute ({domains_per_second:.2f} domains/second)")
     
     # Clean up checkpoint if all domains processed
     #if total_processed >= len(domains):
