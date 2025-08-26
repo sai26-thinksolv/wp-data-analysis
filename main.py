@@ -821,7 +821,7 @@ async def main(preset: str = "balanced", custom_config: dict = None):
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
-    asyncio.run(main("balanced", {"ENABLE_WHOIS": False, "ENABLE_CRAWLING": False, "ENABLE_PAGES_API": False}))
+    asyncio.run(main("balanced", {"ENABLE_PAGES_API": False}))
 
     # Run 1: Basic info only
 #await main("balanced", {"ENABLE_WORDPRESS_API": False})
