@@ -146,12 +146,31 @@ def validate_and_load_data(input_file):
 
     # Normalize domain list
     domains = []
+    raw_domains = []
     try:
         if "domain" in [c.lower() for c in df.columns]:
             col = [c for c in df.columns if c.lower() == "domain"][0]
-            domains = [str(x).strip() for x in df[col].dropna().tolist() if str(x).strip()]
+            raw_domains = [str(x).strip() for x in df[col].dropna().tolist() if str(x).strip()]
         else:
-            domains = [str(x).strip() for x in df.iloc[:,0].dropna().tolist() if str(x).strip()]
+            raw_domains = [str(x).strip() for x in df.iloc[:,0].dropna().tolist() if str(x).strip()]
+        
+        # Normalize each domain and track invalid ones
+        invalid_domains = []
+        for raw_domain in raw_domains:
+            normalized = normalize_domain(raw_domain)
+            if normalized:
+                domains.append(normalized)
+                if normalized != raw_domain.lower():
+                    print(f"📝 Normalized '{raw_domain}' → '{normalized}'")
+            else:
+                invalid_domains.append(raw_domain)
+        
+        # Report invalid domains
+        if invalid_domains:
+            print(f"⚠️ Skipped {len(invalid_domains)} invalid domain(s): {', '.join(invalid_domains[:5])}")
+            if len(invalid_domains) > 5:
+                print(f"   ... and {len(invalid_domains) - 5} more")
+                
     except Exception as e:
         print(f"❌ Error parsing domains: {e}")
         sys.exit(1)
@@ -163,6 +182,67 @@ def validate_and_load_data(input_file):
     return domains
 
 # ---------- Helper Functions ----------
+def normalize_domain(domain_input: str) -> str:
+    """
+    Normalize domain input to extract clean domain name.
+    Handles URLs like https://domain.com, https://www.domain.com, etc.
+    
+    Args:
+        domain_input (str): Raw domain input (can be URL or plain domain)
+        
+    Returns:
+        str: Clean domain name (e.g., "example.com")
+    """
+    if not domain_input or not isinstance(domain_input, str):
+        return ""
+    
+    domain_input = domain_input.strip()
+    
+    # If it looks like a URL, parse it
+    if domain_input.startswith(('http://', 'https://', 'www.')):
+        try:
+            # Add protocol if missing but starts with www
+            if domain_input.startswith('www.'):
+                domain_input = 'https://' + domain_input
+            
+            parsed = urlparse(domain_input)
+            domain = parsed.netloc.lower()
+            
+            # Remove www. prefix if present
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            
+            # Remove port numbers from parsed netloc
+            if ':' in domain and domain.count(':') == 1:
+                domain = domain.split(':')[0]
+                
+            return domain
+        except Exception:
+            # If URL parsing fails, try to extract domain manually
+            pass
+    
+    # Clean up common prefixes/suffixes
+    domain = domain_input.lower()
+    
+    # Remove protocol prefixes
+    for prefix in ['https://', 'http://', 'www.']:
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    
+    # Remove trailing slashes and paths
+    if '/' in domain:
+        domain = domain.split('/')[0]
+    
+    # Remove port numbers (but avoid breaking IPv6 addresses)
+    if ':' in domain and domain.count(':') == 1:  # Only single colon (not IPv6)
+        domain = domain.split(':')[0]
+    
+    # Basic validation - should contain at least one dot
+    if '.' not in domain or len(domain) < 3:
+        return ""
+    
+    return domain
+
 def normalize_url(base_url: str, href: str) -> str:
     url = urljoin(base_url, href)
     parsed = urlparse(url)
@@ -506,10 +586,10 @@ async def process_domains(domains, config):
                     "Country of Origin": country,
                     "Domain Created": created,
                     "Domain Last Modified": updated,
-                    "Pages Crawled (Count)": crawl_result.pages_crawled,
+                    "Pages Crawled": crawl_result.pages_crawled,
                     "Has Contact Form": "Yes" if crawl_result.has_contact_form else "No",
-                    "Emails (unique)": emails_out,
-                    "Social Links (unique)": socials_out,
+                    "Emails": emails_out,
+                    "Social Links": socials_out,
                     "Contact Page Link": crawl_result.contact_page_link or "NA",
                     "About Page Link": crawl_result.about_page_link or "NA",
                     "Posts API Status": posts_api_status,
