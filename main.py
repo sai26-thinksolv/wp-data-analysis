@@ -51,7 +51,7 @@ def get_config(preset: str = "balanced"):
         'ENABLE_PAGES_API': True,
         
         # Output format options
-        'OUTPUT_FORMAT': 'csv',  # 'csv', 'json', 'jsonl', 'sqlite'
+        'OUTPUT_FORMAT': 'jsonl',  # 'csv', 'json', 'jsonl', 'sqlite'
         'OUTPUT_COMPRESSION': None,  # None, 'gzip', 'bz2'
         
         # Record update behavior
@@ -352,17 +352,25 @@ def get_last_wp_entry(domain: str, content_type: str = "posts"):
         "last_modified": None,
         "status": "API not available"
     }
-
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://google.com",
+    }
     for base_url in base_urls:
         try:
             # Get latest created (orderby=date)
             created_url = f"{base_url}?per_page=1&orderby=date&order=desc"
-            r_created = requests.get(created_url, timeout=10)
+            print(f"Fetching latest created entry for {domain} via {created_url}")
+            r_created = requests.get(created_url, timeout=10, headers=headers)
             
             # Get latest modified (orderby=modified)
             modified_url = f"{base_url}?per_page=1&orderby=modified&order=desc"
-            r_modified = requests.get(modified_url, timeout=10)
+            print(f"Fetching latest modified entry for {domain} via {modified_url}")
+            r_modified = requests.get(modified_url, timeout=10, headers=headers)
 
+            print(r_created.status_code, r_modified.status_code)
             if r_created.status_code == 200 and r_modified.status_code == 200:
                 data_created = r_created.json()
                 data_modified = r_modified.json()
@@ -560,6 +568,7 @@ async def process_domains(domains, config):
 
                 # WordPress API timing
                 wp_start = time.time()
+                print(config['ENABLE_PAGES_API'])
                 posts_data = get_last_wp_entry(domain, "posts") if (config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']) else {"status": "disabled", "last_created": None, "last_modified": None}
                 pages_data = get_last_wp_entry(domain, "pages") if (config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']) else {"status": "disabled", "last_created": None, "last_modified": None}
                 wp_time = time.time() - wp_start
@@ -901,7 +910,7 @@ async def main(preset: str = "balanced", custom_config: dict = None):
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
-    asyncio.run(main("balanced", {"ENABLE_PAGES_API": False}))
+    asyncio.run(main("balanced", {"ENABLE_PAGES_API": True}))
 
     # Run 1: Basic info only
 #await main("balanced", {"ENABLE_WORDPRESS_API": False})
