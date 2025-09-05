@@ -16,6 +16,7 @@ import requests
 import dns.resolver
 import whois
 from bs4 import BeautifulSoup
+import numpy as np
 
 
 import gzip
@@ -51,7 +52,7 @@ def analyze_file(file_path):
     else:
         print("❌ Unsupported file format")
         return
- 
+
     print(f"📈 Total domains: {len(df)}")
 
     # Analyze data completeness
@@ -219,10 +220,10 @@ def get_config(preset: str = "balanced"):
         'output_file': r"processed.jsonl", # Changed default to jsonl
         'checkpoint_file': r"checkpoint.json",
         'shutdown_file': r"stop_processing.txt",
-        'batch_save_interval': 100,  # Save progress every N domains
+        'batch_save_interval': 50,  # Save progress every N domains
         'MAX_PAGES_PER_DOMAIN': 250,
         'MAX_CONCURRENCY': 20,
-        'REQUEST_TIMEOUT_SECONDS': 12,
+        'REQUEST_TIMEOUT_SECONDS': 15,
         'USER_AGENT': "Mozilla/5.0 (compatible; LeadDiscoveryBot/1.0; +https://example.com/bot)",
         'RECENT_DAYS_THRESHOLD': 180,
         'MAX_EMAILS_IN_OUTPUT': 10,
@@ -537,7 +538,8 @@ def get_whois(domain: str):
         if isinstance(updated, list) and updated: updated = updated[0]
         return (country or "NA", str(created) if created else "NA", str(updated) if updated else "NA")
     except Exception as e:
-        print(f"❌ WHOIS Error for {domain}: {e}")
+        # Suppress WHOIS errors from printing
+        # print(f"❌ WHOIS Error for {domain}: {e}")
         return ("Resolution Error","Resolution Error","Resolution Error")
 
 # ---------- WordPress API Functions ----------
@@ -1004,8 +1006,11 @@ def optimize_data_for_storage(results, config):
     for result in results:
         optimized = {}
         for key, value in result.items():
+            # Handle NaN values explicitly
+            if isinstance(value, float) and np.isnan(value):
+                optimized[key] = None # Convert NaN to None (JSON null)
             # Convert long strings to abbreviated versions
-            if isinstance(value, str):
+            elif isinstance(value, str):
                 # Truncate very long titles/content
                 if 'Title' in key and len(value) > 100:
                     value = value[:97] + "..."
@@ -1018,14 +1023,15 @@ def optimize_data_for_storage(results, config):
                     from urllib.parse import urlparse
                     parsed = urlparse(value)
                     value = f"{parsed.netloc}{parsed.path}"
-
-            optimized[key] = value
+                optimized[key] = value
+            else:
+                optimized[key] = value
 
         # Only include domains with meaningful data
         if config.get('ENABLE_DATA_DEDUPLICATION', True):
             # Skip if this is just a basic domain with no additional info
             meaningful_fields = [k for k, v in optimized.items()
-                               if k != 'Domain' and v not in ['NA', 'No', 'disabled', '']]
+                               if k != 'Domain' and v not in ['NA', 'No', 'disabled', ''] and v is not None] # Check for None as well
             if len(meaningful_fields) >= 2:  # At least 2 meaningful fields
                 optimized_results.append(optimized)
         else:
@@ -1140,7 +1146,9 @@ def save_results(results, config):
              # For JSONL, append directly to the uncompressed file first
              with open(uncompressed_output_file, 'a') as f:
                  for record in new_df.to_dict('records'):
-                     f.write(json.dumps(record, default=str) + '\n')
+                     # Convert numpy NaN to None before dumping
+                     cleaned_record = {k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in record.items()}
+                     f.write(json.dumps(cleaned_record, default=str) + '\n')
              print(f"✅ Results saved to {uncompressed_output_file} (JSONL format)")
 
              # Note: For JSONL update_existing logic is handled by the fact that process_domains skips already processed domains
