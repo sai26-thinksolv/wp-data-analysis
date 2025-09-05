@@ -51,7 +51,7 @@ def analyze_file(file_path):
     else:
         print("❌ Unsupported file format")
         return
-
+ 
     print(f"📈 Total domains: {len(df)}")
 
     # Analyze data completeness
@@ -215,7 +215,7 @@ except ImportError:
 def get_config(preset: str = "balanced"):
     """Return configuration settings with performance presets"""
     base_config = {
-        'input_file': r"/content/wp-data-analysis/first_2000.csv",
+        'input_file': r"/content/wp-data-analysis/Input_csv_Files/File_1.csv",
         'output_file': r"processed.jsonl", # Changed default to jsonl
         'checkpoint_file': r"checkpoint.json",
         'shutdown_file': r"stop_processing.txt",
@@ -536,8 +536,9 @@ def get_whois(domain: str):
         if isinstance(created, list) and created: created = created[0]
         if isinstance(updated, list) and updated: updated = updated[0]
         return (country or "NA", str(created) if created else "NA", str(updated) if updated else "NA")
-    except:
-        return ("NA","NA","NA")
+    except Exception as e:
+        print(f"❌ WHOIS Error for {domain}: {e}")
+        return ("Resolution Error","Resolution Error","Resolution Error")
 
 # ---------- WordPress API Functions ----------
 def get_last_wp_entry(domain: str, content_type: str = "posts"):
@@ -1162,9 +1163,10 @@ def save_results(results, config):
 
         else:
             # Fallback to CSV
-            file_exists = os.path.exists(uncompressed_output_file)
-            new_df.to_csv(uncompressed_output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
-            print(f"✅ Results saved to {uncompressed_output_file} (CSV format)")
+            fallback_file = config['output_file'].replace('.jsonl', '.csv') # Fallback to CSV
+            file_exists = os.path.exists(fallback_file)
+            new_df.to_csv(fallback_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+            print(f"✅ Results saved to {fallback_file} (CSV format)")
 
         # Apply compression if enabled and the file exists
         if compression and compression != 'None' and os.path.exists(uncompressed_output_file):
@@ -1267,6 +1269,7 @@ async def main(preset: str = "balanced", custom_config: dict = None):
 if __name__ == "__main__":
     # Removed asyncio.run() and await main directly
     await main("balanced", {"ENABLE_PAGES_API": True, "input_file": "/content/wp-data-analysis/Input_csv_Files/File_1.csv", "OUTPUT_FORMAT": "jsonl"})
+
     # Run 1: Basic info only
 #await main("balanced", {"ENABLE_WORDPRESS_API": False})
 
