@@ -30,14 +30,14 @@ def get_file_size_mb(file_path):
 def analyze_file(file_path):
     """Analyze processed file and show statistics"""
     print(f"\n📊 File Analysis: {file_path}")
-    
+
     if not os.path.exists(file_path):
         print("❌ File not found!")
         return
-    
+
     size_mb = get_file_size_mb(file_path)
     print(f"📁 File size: {size_mb:.2f} MB")
-    
+
     # Determine file type and load data
     if file_path.endswith('.csv'):
         df = pd.read_csv(file_path)
@@ -51,9 +51,9 @@ def analyze_file(file_path):
     else:
         print("❌ Unsupported file format")
         return
-    
+
     print(f"📈 Total domains: {len(df)}")
-    
+
     # Analyze data completeness
     if 'Domain' in df.columns:
         # Count domains with meaningful data
@@ -62,14 +62,14 @@ def analyze_file(file_path):
             non_na_fields = sum(1 for v in row.values if str(v) not in ['NA', 'No', 'disabled', ''])
             if non_na_fields >= 3:  # Domain + at least 2 other fields
                 meaningful_domains += 1
-        
+
         print(f"✅ Domains with data: {meaningful_domains} ({meaningful_domains/len(df)*100:.1f}%)")
-        
+
         # Show top data sources
         if 'Posts API Status' in df.columns:
             wp_success = len(df[df['Posts API Status'] == 'success'])
             print(f"🔌 WordPress API success: {wp_success} ({wp_success/len(df)*100:.1f}%)")
-        
+
         if 'Has Contact Form' in df.columns:
             contact_forms = len(df[df['Has Contact Form'] == 'Yes'])
             print(f"📝 Contact forms found: {contact_forms} ({contact_forms/len(df)*100:.1f}%)")
@@ -77,77 +77,87 @@ def analyze_file(file_path):
 def split_file_by_size(file_path, max_size_mb=50):
     """Split large file into smaller chunks"""
     print(f"\n✂️ Splitting {file_path} into {max_size_mb}MB chunks...")
-    
+
     if file_path.endswith('.csv'):
         df = pd.read_csv(file_path)
-        
+
         # Calculate rows per chunk
         total_size = get_file_size_mb(file_path)
         rows_per_chunk = int(len(df) * (max_size_mb / total_size))
-        
+
         chunks = [df[i:i+rows_per_chunk] for i in range(0, len(df), rows_per_chunk)]
-        
+
         base_name = file_path.replace('.csv', '')
         for i, chunk in enumerate(chunks):
             chunk_file = f"{base_name}_part{i+1}.csv"
             chunk.to_csv(chunk_file, index=False)
             print(f"📁 Created: {chunk_file} ({len(chunk)} domains, {get_file_size_mb(chunk_file):.1f}MB)")
-    
+
     elif file_path.endswith('.jsonl'):
         # For JSONL, split by line count
         with open(file_path, 'r') as f:
             lines = f.readlines()
-        
+
         total_size = get_file_size_mb(file_path)
         lines_per_chunk = int(len(lines) * (max_size_mb / total_size))
-        
+
         base_name = file_path.replace('.jsonl', '')
         chunk_num = 1
-        
+
         for i in range(0, len(lines), lines_per_chunk):
             chunk_lines = lines[i:i+lines_per_chunk]
             chunk_file = f"{base_name}_part{chunk_num}.jsonl"
-            
+
             with open(chunk_file, 'w') as f:
                 f.writelines(chunk_lines)
-            
+
             print(f"📁 Created: {chunk_file} ({len(chunk_lines)} domains, {get_file_size_mb(chunk_file):.1f}MB)")
             chunk_num += 1
 
+# Updated compress_file to handle jsonl extension correctly
 def compress_file(file_path, compression='gzip'):
     """Compress a file"""
     print(f"\n🗜️ Compressing {file_path} with {compression}...")
-    
+
     original_size = get_file_size_mb(file_path)
-    
+    compressed_file = None
+
     if compression == 'gzip':
         with open(file_path, 'rb') as f_in:
-            with gzip.open(f"{file_path}.gz", 'wb') as f_out:
+            compressed_file = f"{file_path}.gz"
+            with gzip.open(compressed_file, 'wb') as f_out:
                 f_out.writelines(f_in)
-        compressed_file = f"{file_path}.gz"
     elif compression == 'bz2':
         with open(file_path, 'rb') as f_in:
-            with bz2.open(f"{file_path}.bz2", 'wb') as f_out:
+            compressed_file = f"{file_path}.bz2"
+            with bz2.open(compressed_file, 'wb') as f_out:
                 f_out.writelines(f_in)
-        compressed_file = f"{file_path}.bz2"
     else:
         print("❌ Unsupported compression format")
-        return
-    
-    compressed_size = get_file_size_mb(compressed_file)
-    compression_ratio = (1 - compressed_size/original_size) * 100
-    
-    print(f"✅ Compressed: {compressed_file}")
-    print(f"📊 Size reduction: {original_size:.1f}MB → {compressed_size:.1f}MB ({compression_ratio:.1f}% smaller)")
+        return file_path # Return original path if no compression
+
+    if compressed_file and os.path.exists(compressed_file):
+        compressed_size = get_file_size_mb(compressed_file)
+        compression_ratio = (1 - compressed_size/original_size) * 100 if original_size > 0 else 0
+
+        print(f"✅ Compressed: {compressed_file}")
+        print(f"📊 Size reduction: {original_size:.1f}MB → {compressed_size:.1f}MB ({compression_ratio:.1f}% smaller)")
+        # Remove original file after successful compression
+        os.remove(file_path)
+        return compressed_file
+    else:
+        print(f"❌ Compression failed for {file_path}")
+        return file_path # Return original path if compression failed
+
 
 def clean_data(file_path, output_file=None):
     """Remove domains with minimal data to reduce file size"""
     print(f"\n🧹 Cleaning data in {file_path}...")
-    
+
     if output_file is None:
         base_name, ext = os.path.splitext(file_path)
         output_file = f"{base_name}_cleaned{ext}"
-    
+
     if file_path.endswith('.csv'):
         df = pd.read_csv(file_path)
     elif file_path.endswith('.jsonl'):
@@ -157,25 +167,28 @@ def clean_data(file_path, output_file=None):
                 if line.strip():
                     records.append(json.loads(line))
         df = pd.DataFrame(records)
-    
+    else:
+        print("❌ Unsupported file format")
+        return
+
     original_count = len(df)
-    
+
     # Keep only domains with meaningful data
     cleaned_df = df.copy()
     rows_to_keep = []
-    
+
     for idx, row in df.iterrows():
         meaningful_fields = 0
         for col, value in row.items():
             if col != 'Domain' and str(value) not in ['NA', 'No', 'disabled', '']:
                 meaningful_fields += 1
-        
+
         # Keep if has at least 3 meaningful fields (excluding domain)
         if meaningful_fields >= 3:
             rows_to_keep.append(idx)
-    
+
     cleaned_df = df.loc[rows_to_keep]
-    
+
     # Save cleaned data
     if output_file.endswith('.csv'):
         cleaned_df.to_csv(output_file, index=False)
@@ -183,10 +196,10 @@ def clean_data(file_path, output_file=None):
         with open(output_file, 'w') as f:
             for record in cleaned_df.to_dict('records'):
                 f.write(json.dumps(record, default=str) + '\n')
-    
+
     original_size = get_file_size_mb(file_path)
     cleaned_size = get_file_size_mb(output_file)
-    
+
     print(f"✅ Cleaned file: {output_file}")
     print(f"📊 Domains: {original_count} → {len(cleaned_df)} ({len(cleaned_df)/original_count*100:.1f}% kept)")
     print(f"📊 Size: {original_size:.1f}MB → {cleaned_size:.1f}MB ({(1-cleaned_size/original_size)*100:.1f}% smaller)")
@@ -202,11 +215,11 @@ except ImportError:
 def get_config(preset: str = "balanced"):
     """Return configuration settings with performance presets"""
     base_config = {
-        'input_file': r"sample.csv",
-        'output_file': r"processed.csv",
+        'input_file': r"/content/wp-data-analysis/first_2000.csv",
+        'output_file': r"processed.jsonl", # Changed default to jsonl
         'checkpoint_file': r"checkpoint.json",
         'shutdown_file': r"stop_processing.txt",
-        'batch_save_interval': 5,  # Save progress every N domains
+        'batch_save_interval': 100,  # Save progress every N domains
         'MAX_PAGES_PER_DOMAIN': 250,
         'MAX_CONCURRENCY': 20,
         'REQUEST_TIMEOUT_SECONDS': 12,
@@ -216,7 +229,7 @@ def get_config(preset: str = "balanced"):
         'MAX_SOCIALS_IN_OUTPUT': 15,
         'COMMON_PAGES': ["", "contact", "contact-us", "support", "help", "about", "about-us", "team"],
         'SOCIAL_DOMAINS': ["facebook.com", "linkedin.com", "twitter.com", "x.com", "instagram.com"],
-        
+
         # Feature flags - enable/disable specific operations
         'ENABLE_WHOIS': True,
         'ENABLE_DNS_MX': True,
@@ -224,21 +237,21 @@ def get_config(preset: str = "balanced"):
         'ENABLE_WORDPRESS_API': True,
         'ENABLE_POSTS_API': True,
         'ENABLE_PAGES_API': True,
-        
+
         # Output format options
         'OUTPUT_FORMAT': 'jsonl',  # 'csv', 'json', 'jsonl', 'sqlite'
-        'OUTPUT_COMPRESSION': 'gzip',  # None, 'gzip', 'bz2'
+        'OUTPUT_COMPRESSION': None,  # None, 'gzip', 'bz2'
         'ENABLE_DATA_DEDUPLICATION': True,  # Remove duplicate data
         'MAX_FILE_SIZE_MB': 100,  # Split files when they exceed this size
-        
+
         # Record update behavior
         'UPDATE_EXISTING_RECORDS': True,  # Merge new data with existing records
         'FORCE_REPROCESS': False,  # Ignore checkpoint and process all domains
-        
+
         # Shutdown check interval (seconds)
         'SHUTDOWN_CHECK_INTERVAL': 1.0
     }
-    
+
     # Performance presets
     if preset == "speed":
         base_config.update({
@@ -284,7 +297,7 @@ def get_config(preset: str = "balanced"):
             'OUTPUT_FORMAT': 'jsonl'  # More compact than CSV
         })
     # "balanced" preset uses base_config as-is
-    
+
     return base_config
 
 # ---------- Graceful Shutdown Handler ----------
@@ -293,7 +306,7 @@ class GracefulShutdown:
         self.shutdown_requested = False
         self.shutdown_file = shutdown_file
         self._setup_signal_handlers()
-    
+
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown"""
         try:
@@ -301,17 +314,17 @@ class GracefulShutdown:
             signal.signal(signal.SIGTERM, self._signal_handler)
         except Exception:
             pass  # Signal handling may not work in all environments (e.g., Jupyter)
-    
+
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals"""
         print(f"\n🛑 Received shutdown signal ({signum}). Finishing current batch...")
         self.shutdown_requested = True
-    
+
     def should_shutdown(self) -> bool:
         """Check if shutdown has been requested via signal or file"""
         if self.shutdown_requested:
             return True
-        
+
         # Check for shutdown file
         if os.path.exists(self.shutdown_file):
             print(f"🛑 Shutdown file '{self.shutdown_file}' detected. Finishing current batch...")
@@ -321,7 +334,7 @@ class GracefulShutdown:
             except Exception:
                 pass
             return True
-        
+
         return False
 
 # ---------- Data Validation ----------
@@ -351,7 +364,7 @@ def validate_and_load_data(input_file):
             raw_domains = [str(x).strip() for x in df[col].dropna().tolist() if str(x).strip()]
         else:
             raw_domains = [str(x).strip() for x in df.iloc[:,0].dropna().tolist() if str(x).strip()]
-        
+
         # Normalize each domain and track invalid ones
         invalid_domains = []
         for raw_domain in raw_domains:
@@ -362,13 +375,13 @@ def validate_and_load_data(input_file):
                     print(f"📝 Normalized '{raw_domain}' → '{normalized}'")
             else:
                 invalid_domains.append(raw_domain)
-        
+
         # Report invalid domains
         if invalid_domains:
             print(f"⚠️ Skipped {len(invalid_domains)} invalid domain(s): {', '.join(invalid_domains[:5])}")
             if len(invalid_domains) > 5:
                 print(f"   ... and {len(invalid_domains) - 5} more")
-                
+
     except Exception as e:
         print(f"❌ Error parsing domains: {e}")
         sys.exit(1)
@@ -384,61 +397,61 @@ def normalize_domain(domain_input: str) -> str:
     """
     Normalize domain input to extract clean domain name.
     Handles URLs like https://domain.com, https://www.domain.com, etc.
-    
+
     Args:
         domain_input (str): Raw domain input (can be URL or plain domain)
-        
+
     Returns:
         str: Clean domain name (e.g., "example.com")
     """
     if not domain_input or not isinstance(domain_input, str):
         return ""
-    
+
     domain_input = domain_input.strip()
-    
+
     # If it looks like a URL, parse it
     if domain_input.startswith(('http://', 'https://', 'www.')):
         try:
             # Add protocol if missing but starts with www
             if domain_input.startswith('www.'):
                 domain_input = 'https://' + domain_input
-            
+
             parsed = urlparse(domain_input)
             domain = parsed.netloc.lower()
-            
+
             # Remove www. prefix if present
             if domain.startswith('www.'):
                 domain = domain[4:]
-            
+
             # Remove port numbers from parsed netloc
             if ':' in domain and domain.count(':') == 1:
                 domain = domain.split(':')[0]
-                
+
             return domain
         except Exception:
             # If URL parsing fails, try to extract domain manually
             pass
-    
+
     # Clean up common prefixes/suffixes
     domain = domain_input.lower()
-    
+
     # Remove protocol prefixes
     for prefix in ['https://', 'http://', 'www.']:
         if domain.startswith(prefix):
             domain = domain[len(prefix):]
-    
+
     # Remove trailing slashes and paths
     if '/' in domain:
         domain = domain.split('/')[0]
-    
+
     # Remove port numbers (but avoid breaking IPv6 addresses)
     if ':' in domain and domain.count(':') == 1:  # Only single colon (not IPv6)
         domain = domain.split(':')[0]
-    
+
     # Basic validation - should contain at least one dot
     if '.' not in domain or len(domain) < 3:
         return ""
-    
+
     return domain
 
 def normalize_url(base_url: str, href: str) -> str:
@@ -466,23 +479,23 @@ def looks_like_binary(path: str) -> bool:
 def get_date_patterns_and_cutoff(recent_days_threshold):
     """Get date patterns and recent cutoff date"""
     RECENT_CUTOFF = datetime.now() - timedelta(days=recent_days_threshold)
-    
+
     DATE_PATTERNS = [
         r"(20[0-9]{2})[-/\.](0[1-9]|1[0-2])(?:[-/\.](0[1-9]|[12][0-9]|3[01]))?",
         r"(?:(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|January|February|March|April|June|July|August|September|October|November|December)\s+)([0-9]{1,2},?\s+)?(20[0-9]{2})",
     ]
-    
+
     MONTH_MAP = {
         'jan':1,'january':1, 'feb':2,'february':2,'mar':3,'march':3,'apr':4,'april':4,
         'may':5,'jun':6,'june':6,'jul':7,'july':7,'aug':8,'august':8,'sep':9,'sept':9,'september':9,
         'oct':10,'october':10,'nov':11,'november':11,'dec':12,'december':12
     }
-    
+
     return DATE_PATTERNS, MONTH_MAP, RECENT_CUTOFF
 
 def any_recent_date_in_text(text: str, recent_days_threshold: int) -> bool:
     DATE_PATTERNS, MONTH_MAP, RECENT_CUTOFF = get_date_patterns_and_cutoff(recent_days_threshold)
-    
+
     try:
         for m in re.finditer(DATE_PATTERNS[0], text):
             y = int(m.group(1)); mo = int(m.group(2)); d = m.group(3)
@@ -562,7 +575,7 @@ def get_last_wp_entry(domain: str, content_type: str = "posts"):
             created_url = f"{base_url}?per_page=1&orderby=date&order=desc"
             #print(f"Fetching latest created entry for {domain} via {created_url}")
             r_created = requests.get(created_url, timeout=10, headers=headers)
-            
+
             # Get latest modified (orderby=modified)
             modified_url = f"{base_url}?per_page=1&orderby=modified&order=desc"
             #print(f"Fetching latest modified entry for {domain} via {modified_url}")
@@ -723,39 +736,67 @@ async def process_domains(domains, config):
     checkpoint_file = config['checkpoint_file']
     batch_save_interval = config['batch_save_interval']
     checkpoint_data = {}
-    
+
+    # Determine expected output file name based on format and compression
+    output_file_base = config['output_file'].replace('.csv', '').replace('.json', '').replace('.jsonl', '').replace('.sqlite', '')
+    output_format = config.get('OUTPUT_FORMAT', 'csv').lower()
+    output_extension = {
+        'csv': '.csv',
+        'json': '.json',
+        'jsonl': '.jsonl',
+        'sqlite': '.db'
+    }.get(output_format, '.csv')
+
+    uncompressed_output_file = f"{output_file_base}{output_extension}"
+    config['current_output_file'] = uncompressed_output_file # Store the expected uncompressed name
+
     if os.path.exists(checkpoint_file):
-        with open(checkpoint_file, 'r') as f:
-            checkpoint_data = json.load(f)
-    
+        try:
+            with open(checkpoint_file, 'r') as f:
+                checkpoint_data = json.load(f)
+            # Load from the correct output file name stored in checkpoint if available
+            if 'current_output_file' in checkpoint_data:
+                 config['current_output_file'] = checkpoint_data['current_output_file']
+                 uncompressed_output_file = config['current_output_file']
+                 # If output file was compressed, need to work with the compressed name for existence check
+                 if config.get('OUTPUT_COMPRESSION') and config['OUTPUT_COMPRESSION'] != 'None':
+                     compressed_output_file = uncompressed_output_file + ('.gz' if config['OUTPUT_COMPRESSION'] == 'gzip' else '.bz2')
+                     if os.path.exists(compressed_output_file):
+                         print(f"⚠️ Found compressed checkpoint file: {compressed_output_file}. Data will be merged into this.")
+                         config['current_output_file'] = compressed_output_file # Use compressed name for append logic
+        except Exception as e:
+            print(f"⚠️ Error loading checkpoint file: {e}. Starting fresh.")
+            checkpoint_data = {}
+
+
     processed_domains = checkpoint_data.get('processed_domains', [])
     failed_domains = checkpoint_data.get('failed_domains', [])
     next_domain_index = checkpoint_data.get('next_domain_index', 0)
-    
+
     shutdown_handler = GracefulShutdown(config['shutdown_file'])
-    
+
     async with aiohttp.ClientSession() as session:
         for i, domain in enumerate(domains[next_domain_index:], next_domain_index):
             # Skip domains only if not forcing reprocess
             if not config.get('FORCE_REPROCESS', False):
                 if domain in processed_domains or domain in failed_domains:
                     continue
-            
+
             # Check for shutdown at the beginning of each iteration
             if shutdown_handler.should_shutdown():
                 print(f"🛑 Shutdown requested. Stopping at domain {i+1}/{len(domains)}")
                 break
-            
+
             domain_start_time = time.time()
             #print(f"Processing {i+1}/{len(domains)}: {domain}")
-            
+
             try:
                 # WHOIS and DNS timing
                 whois_start = time.time()
                 workspace = check_workspace(domain) if config['ENABLE_DNS_MX'] else "NA"
                 country, created, updated = get_whois(domain) if config['ENABLE_WHOIS'] else ("NA","NA","NA")
                 whois_dns_time = time.time() - whois_start
-               
+
                 # Crawling timing
                 crawl_start = time.time()
                 crawl_result = await crawl_domain(session, domain, config) if config['ENABLE_CRAWLING'] else SiteScrapeResult()
@@ -766,7 +807,7 @@ async def process_domains(domains, config):
 
                 # WordPress API timing
                 wp_start = time.time()
-                
+
                 posts_data = get_last_wp_entry(domain, "posts") if (config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']) else {"status": "disabled", "last_created": None, "last_modified": None}
                 pages_data = get_last_wp_entry(domain, "pages") if (config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']) else {"status": "disabled", "last_created": None, "last_modified": None}
                 wp_time = time.time() - wp_start
@@ -812,35 +853,36 @@ async def process_domains(domains, config):
                     "Pages Last Modified Title": pages_last_modified_title,
                     "Pages Last Modified Date": pages_last_modified_date
                 })
-                
+
                 # Mark as successfully processed
                 processed_domains.append(domain)
                 total_time = time.time() - domain_start_time
-                
+
                 # Show which operations were performed
                 ops_performed = []
                 if config['ENABLE_DNS_MX']: ops_performed.append("DNS")
                 if config['ENABLE_WHOIS']: ops_performed.append("WHOIS")
                 if config['ENABLE_CRAWLING']: ops_performed.append("Crawl")
-                if config['ENABLE_WORDPRESS_API'] and (config['ENABLE_POSTS_API'] or config['ENABLE_PAGES_API']): 
+                if config['ENABLE_WORDPRESS_API'] and (config['ENABLE_POSTS_API'] or config['ENABLE_PAGES_API']):
                     ops_performed.append("WP-API")
-                
+
                 ops_str = f" [{', '.join(ops_performed)}]" if ops_performed else ""
                 #print(f"✅ Successfully processed {domain} in {total_time:.2f}s{ops_str} (WHOIS/DNS: {whois_dns_time:.2f}s, Crawl: {crawl_time:.2f}s, WP: {wp_time:.2f}s)")
-                
+
             except Exception as e:
                 total_time = time.time() - domain_start_time
                 print(f"❌ Error processing {domain} in {total_time:.2f}s: {e}")
                 # Mark as failed but still track progress
                 failed_domains.append(domain)
                 print(f"⚠️ Marked {domain} as failed, will not retry")
-            
+
             # Update checkpoint data regardless of success/failure
             checkpoint_data['processed_domains'] = processed_domains
             checkpoint_data['failed_domains'] = failed_domains
             checkpoint_data['next_domain_index'] = i + 1
             checkpoint_data['last_updated'] = datetime.now().isoformat()
-            
+            checkpoint_data['current_output_file'] = config['current_output_file'] # Save the current output file name
+
             # Save checkpoint and results at regular intervals
             if (i + 1) % batch_save_interval == 0:
                 with open(checkpoint_file, 'w') as f:
@@ -849,42 +891,42 @@ async def process_domains(domains, config):
                     save_results(results, config)
                     results = []
                 print(f"💾 Checkpoint saved at domain {i+1} (Success: {len(processed_domains)}, Failed: {len(failed_domains)})")
-    
+
     # Save any remaining results
     if results:
         save_results(results, config)
-    
+
     # Final checkpoint save
     with open(checkpoint_file, 'w') as f:
         json.dump(checkpoint_data, f, indent=2)
-    
+
     # Summary
     total_processing_time = time.time() - start_time
     total_processed = len(processed_domains) + len(failed_domains)
-    
+
     print(f"\n📊 Processing Summary:")
     print(f"   ✅ Successful: {len(processed_domains)}")
     print(f"   ❌ Failed: {len(failed_domains)}")
     print(f"   📈 Total processed: {total_processed}/{len(domains)}")
     print(f"   ⏰ Total time: {total_processing_time:.2f} seconds ({total_processing_time/60:.1f} minutes)")
-    
+
     if total_processed > 0:
         avg_time_per_domain = total_processing_time / total_processed
         #print(f"   📊 Average time per domain: {avg_time_per_domain:.2f} seconds")
-        
+
         # Estimate remaining time if not complete
         remaining_domains = len(domains) - total_processed
         if remaining_domains > 0:
             estimated_remaining_time = remaining_domains * avg_time_per_domain
             #print(f"   🔮 Estimated time for remaining {remaining_domains} domains: {estimated_remaining_time/60:.1f} minutes")
             #print(f"   🎯 Estimated completion: {(datetime.now() + timedelta(seconds=estimated_remaining_time)).strftime('%H:%M:%S')}")
-    
+
     # Performance rate
     if total_processing_time > 0:
         domains_per_second = total_processed / total_processing_time
         domains_per_minute = domains_per_second * 60
         #print(f"   🚀 Processing rate: {domains_per_minute:.1f} domains/minute ({domains_per_second:.2f} domains/second)")
-    
+
     # Show configuration summary
     enabled_features = []
     if config['ENABLE_DNS_MX']: enabled_features.append("DNS MX")
@@ -892,16 +934,14 @@ async def process_domains(domains, config):
     if config['ENABLE_CRAWLING']: enabled_features.append("Crawling")
     if config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']: enabled_features.append("Posts API")
     if config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']: enabled_features.append("Pages API")
-    
-    #print(f"   🔧 Features enabled: {', '.join(enabled_features)}")
-    
-    # Clean up checkpoint if all domains processed
-    #if total_processed >= len(domains):
-        #try:
-            #os.remove(checkpoint_file)
-            #print("🧹 Checkpoint file cleaned up - processing complete!")
-        #except:
-            #pass
+    print(f"   🔧 Features enabled: {', '.join(enabled_features)}")
+
+    print(f"   • Shutdown file: {config['shutdown_file']} (create this file to stop gracefully)")
+    print()
+
+    # Re-validate and load domains at the end for the summary count if needed
+    # domains = validate_and_load_data(config['input_file']) # Removed duplicate call
+    # await process_domains(domains, config) # Removed duplicate call
 
 # ---------- File Management Functions ----------
 def rotate_output_file(original_file):
@@ -909,31 +949,57 @@ def rotate_output_file(original_file):
     import time
     timestamp = int(time.time())
     base_name, ext = os.path.splitext(original_file)
-    new_file = f"{base_name}_{timestamp}{ext}"
+    # Handle compressed files
+    if ext in ['.gz', '.bz2']:
+        base_name = os.path.splitext(base_name)[0] # Get original base name
+        new_file = f"{base_name}_{timestamp}{ext}"
+    else:
+         new_file = f"{base_name}_{timestamp}{ext}"
     return new_file
 
 def compress_file(file_path, compression='gzip'):
     """Compress a file using the specified compression method"""
-    if compression == 'gzip':
-        import gzip
-        with open(file_path, 'rb') as f_in:
-            with gzip.open(f"{file_path}.gz", 'wb') as f_out:
-                f_out.writelines(f_in)
-        os.remove(file_path)
-        return f"{file_path}.gz"
-    elif compression == 'bz2':
-        import bz2
-        with open(file_path, 'rb') as f_in:
-            with bz2.open(f"{file_path}.bz2", 'wb') as f_out:
-                f_out.writelines(f_in)
-        os.remove(file_path)
-        return f"{file_path}.bz2"
-    return file_path
+    print(f"\n🗜️ Compressing {file_path} with {compression}...")
+
+    original_size = get_file_size_mb(file_path)
+    compressed_file = None
+
+    try:
+        if compression == 'gzip':
+            compressed_file = f"{file_path}.gz"
+            with open(file_path, 'rb') as f_in:
+                with gzip.open(compressed_file, 'wb') as f_out:
+                    f_out.writelines(f_in)
+        elif compression == 'bz2':
+            compressed_file = f"{file_path}.bz2"
+            with open(file_path, 'rb') as f_in:
+                with bz2.open(compressed_file, 'wb') as f_out:
+                    f_out.writelines(f_in)
+        else:
+            print("❌ Unsupported compression format")
+            return file_path # Return original path if no compression
+
+        if compressed_file and os.path.exists(compressed_file):
+            compressed_size = get_file_size_mb(compressed_file)
+            compression_ratio = (1 - compressed_size/original_size) * 100 if original_size > 0 else 0
+
+            print(f"✅ Compressed: {compressed_file}")
+            print(f"📊 Size reduction: {original_size:.1f}MB → {compressed_size:.1f}MB ({compression_ratio:.1f}% smaller)")
+            # Remove original file after successful compression
+            os.remove(file_path)
+            return compressed_file
+        else:
+            print(f"❌ Compression failed for {file_path}")
+            return file_path # Return original path if compression failed
+    except Exception as e:
+        print(f"❌ Error during compression of {file_path}: {e}")
+        return file_path # Return original path on error
+
 
 def optimize_data_for_storage(results, config):
     """Optimize data before storage to reduce file size"""
     optimized_results = []
-    
+
     for result in results:
         optimized = {}
         for key, value in result.items():
@@ -951,19 +1017,19 @@ def optimize_data_for_storage(results, config):
                     from urllib.parse import urlparse
                     parsed = urlparse(value)
                     value = f"{parsed.netloc}{parsed.path}"
-            
+
             optimized[key] = value
-        
+
         # Only include domains with meaningful data
         if config.get('ENABLE_DATA_DEDUPLICATION', True):
             # Skip if this is just a basic domain with no additional info
-            meaningful_fields = [k for k, v in optimized.items() 
+            meaningful_fields = [k for k, v in optimized.items()
                                if k != 'Domain' and v not in ['NA', 'No', 'disabled', '']]
             if len(meaningful_fields) >= 2:  # At least 2 meaningful fields
                 optimized_results.append(optimized)
         else:
             optimized_results.append(optimized)
-    
+
     return optimized_results
 
 # ---------- Save Results Function ----------
@@ -971,22 +1037,44 @@ def save_results(results, config):
     """Save results in the specified output format with update capability"""
     if not results:
         return
-    
-    # Check file size and rotate if necessary
-    output_file = config['output_file']
-    max_size_mb = config.get('MAX_FILE_SIZE_MB', 100)
-    
-    if os.path.exists(output_file):
-        file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
-        if file_size_mb > max_size_mb:
-            output_file = rotate_output_file(output_file)
-            config['output_file'] = output_file
-            #print(f"📁 File size exceeded {max_size_mb}MB, rotating to: {output_file}")
-        
-    output_file = config['output_file']
+
     output_format = config.get('OUTPUT_FORMAT', 'csv').lower()
     update_existing = config.get('UPDATE_EXISTING_RECORDS', True)
-    
+    compression = config.get('OUTPUT_COMPRESSION')
+    max_size_mb = config.get('MAX_FILE_SIZE_MB', 100)
+
+    # Determine the uncompressed file name based on format and original output_file config
+    output_file_base = config['output_file'].replace('.csv', '').replace('.json', '').replace('.jsonl', '').replace('.sqlite', '')
+    output_extension = {
+        'csv': '.csv',
+        'json': '.json',
+        'jsonl': '.jsonl',
+        'sqlite': '.db'
+    }.get(output_format, '.csv')
+
+    uncompressed_output_file = f"{output_file_base}{output_extension}"
+    config['current_output_file'] = uncompressed_output_file # Store the expected uncompressed name
+
+    # Check file size (check the compressed file if compression is enabled)
+    file_to_check_size = uncompressed_output_file
+    if compression and compression != 'None':
+         compressed_ext = '.gz' if compression == 'gzip' else '.bz2'
+         compressed_name_to_check = uncompressed_output_file + compressed_ext
+         if os.path.exists(compressed_name_to_check):
+             file_to_check_size = compressed_name_to_check
+
+    if os.path.exists(file_to_check_size):
+        file_size_mb = os.path.getsize(file_to_check_size) / (1024 * 1024)
+        if file_size_mb > max_size_mb:
+            # Rotate the current output file (handling compressed files)
+            rotated_file = rotate_output_file(file_to_check_size)
+            # Update config to point to the new base file for the next batch
+            config['output_file'] = os.path.splitext(rotated_file)[0].replace('.jsonl', '').replace('.json', '').replace('.csv', '').replace('.db', '') # Store base name for next rotation
+            uncompressed_output_file = f"{config['output_file']}{output_extension}" # New uncompressed name
+            config['current_output_file'] = uncompressed_output_file
+            print(f"📁 File size exceeded {max_size_mb}MB, rotating to: {uncompressed_output_file}") # Log the new uncompressed name
+
+
     try:
         # Optimize data before processing
         optimized_results = optimize_data_for_storage(results, config)
@@ -999,126 +1087,111 @@ def save_results(results, config):
             "Posts API Status","Posts Last Created Title","Posts Last Created Link","Posts Last Created Date","Posts Last Modified Title","Posts Last Modified Date",
             "Pages API Status","Pages Last Created Title","Pages Last Created Link","Pages Last Created Date","Pages Last Modified Title","Pages Last Modified Date"
         ]
+        # Add missing columns if any
         for col in expected_cols:
             if col not in new_df.columns: new_df[col] = "NA"
+        # Reorder columns to match expected order
         new_df = new_df[expected_cols]
-        
+
         if output_format == 'csv':
-            file_exists = os.path.exists(output_file)
-            
+            file_exists = os.path.exists(uncompressed_output_file)
+
             if update_existing and file_exists:
-                # Read existing data and merge
                 try:
-                    existing_df = pd.read_csv(output_file)
-                    # Merge new data with existing, updating records by Domain
+                    existing_df = pd.read_csv(uncompressed_output_file)
                     merged_df = merge_domain_records(existing_df, new_df)
-                    merged_df.to_csv(output_file, index=False, quoting=csv.QUOTE_MINIMAL)
-                    #print(f"✅ Results updated in {output_file} ({output_format.upper()} format) - {len(new_df)} records processed")
+                    merged_df.to_csv(uncompressed_output_file, index=False, quoting=csv.QUOTE_MINIMAL)
                 except Exception as e:
-                    print(f"⚠️ Error reading existing file for update: {e}. Appending instead.")
-                    new_df.to_csv(output_file, index=False, mode='a', header=False, quoting=csv.QUOTE_MINIMAL)
+                    print(f"⚠️ Error reading existing CSV file for update: {e}. Appending instead.")
+                    new_df.to_csv(uncompressed_output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
             else:
-                # Append mode for incremental saving
-                new_df.to_csv(output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
-                #print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
-            
+                new_df.to_csv(uncompressed_output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+            print(f"✅ Results saved to {uncompressed_output_file} (CSV format)")
+
         elif output_format == 'json':
-            # For JSON, read existing data and merge
             existing_data = []
-            if os.path.exists(output_file):
+            if os.path.exists(uncompressed_output_file):
                 try:
-                    with open(output_file, 'r') as f:
-                        existing_data = json.load(f)
-                except:
+                    # Read existing data if file exists and is not empty
+                    if os.path.getsize(uncompressed_output_file) > 0:
+                         with open(uncompressed_output_file, 'r') as f:
+                            existing_data = json.load(f)
+                except json.JSONDecodeError:
+                     print(f"⚠️ Existing JSON file '{uncompressed_output_file}' is empty or invalid. Starting fresh.")
+                     existing_data = []
+                except Exception as e:
+                    print(f"⚠️ Error reading existing JSON file for update: {e}. Starting fresh.")
                     existing_data = []
-            
+
+
             if update_existing and existing_data:
-                # Convert to DataFrame for merging
                 existing_df = pd.DataFrame(existing_data)
                 merged_df = merge_domain_records(existing_df, new_df)
                 final_data = merged_df.to_dict('records')
             else:
                 final_data = existing_data + new_df.to_dict('records')
-            
-            with open(output_file, 'w') as f:
+
+            with open(uncompressed_output_file, 'w') as f:
                 json.dump(final_data, f, indent=2, default=str)
-            #print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
-                
+            print(f"✅ Results saved to {uncompressed_output_file} (JSON format)")
+
         elif output_format == 'jsonl':
-            # For JSONL, we need to read all lines, merge, and rewrite
-            if update_existing and os.path.exists(output_file):
-                existing_records = []
-                try:
-                    with open(output_file, 'r') as f:
-                        for line in f:
-                            if line.strip():
-                                existing_records.append(json.loads(line))
-                    
-                    existing_df = pd.DataFrame(existing_records)
-                    merged_df = merge_domain_records(existing_df, new_df)
-                    
-                    # Rewrite the entire file
-                    with open(output_file, 'w') as f:
-                        for record in merged_df.to_dict('records'):
-                            f.write(json.dumps(record, default=str) + '\n')
-                    #print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
-                    
-                    # Apply compression if enabled
-                    compression = config.get('OUTPUT_COMPRESSION')
-                    if compression and compression != 'None':
-                        compressed_file = compress_file(output_file, compression)
-                        print(f"🗜️ File compressed: {compressed_file}")
-                except Exception as e:
-                    print(f"⚠️ Error updating JSONL file: {e}. Appending instead.")
-                    with open(output_file, 'a') as f:
-                        for record in new_df.to_dict('records'):
-                            f.write(json.dumps(record, default=str) + '\n')
-            else:
-                # Append mode
-                with open(output_file, 'a') as f:
-                    for record in new_df.to_dict('records'):
-                        f.write(json.dumps(record, default=str) + '\n')
-                #print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
-                    
+             # For JSONL, append directly to the uncompressed file first
+             with open(uncompressed_output_file, 'a') as f:
+                 for record in new_df.to_dict('records'):
+                     f.write(json.dumps(record, default=str) + '\n')
+             print(f"✅ Results saved to {uncompressed_output_file} (JSONL format)")
+
+             # Note: For JSONL update_existing logic is handled by the fact that process_domains skips already processed domains
+             # and we are appending new results. Full merging on JSONL would require reading the entire file, which can be slow for large files.
+             # Appending is more efficient for incremental saving.
+
         elif output_format == 'sqlite':
             import sqlite3
-            db_file = output_file.replace('.csv', '.db') if output_file.endswith('.csv') else output_file + '.db'
+            db_file = uncompressed_output_file # .db extension is already handled
             conn = sqlite3.connect(db_file)
-            
+
             if update_existing:
-                # Use REPLACE to update existing records
                 new_df.to_sql('domains', conn, if_exists='replace', index=False, method='multi')
             else:
                 new_df.to_sql('domains', conn, if_exists='append', index=False)
-            
+
             conn.close()
-            output_file = db_file  # Update for logging
-            print(f"✅ Results saved to {output_file} ({output_format.upper()} format)")
-            
+            print(f"✅ Results saved to {db_file} (SQLite format)")
+            uncompressed_output_file = db_file # Update for compression step
+
         else:
             # Fallback to CSV
-            file_exists = os.path.exists(output_file)
-            new_df.to_csv(output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
-            print(f"✅ Results saved to {output_file} (CSV format)")
-        
+            file_exists = os.path.exists(uncompressed_output_file)
+            new_df.to_csv(uncompressed_output_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+            print(f"✅ Results saved to {uncompressed_output_file} (CSV format)")
+
+        # Apply compression if enabled and the file exists
+        if compression and compression != 'None' and os.path.exists(uncompressed_output_file):
+            compressed_file_name = compress_file(uncompressed_output_file, compression)
+            config['current_output_file'] = compressed_file_name # Update config to the compressed file name for checkpoint
+
     except Exception as e:
         print(f"❌ Error saving results: {e}")
         # Fallback to CSV append mode
         try:
-            file_exists = os.path.exists(config['output_file'])
-            new_df.to_csv(config['output_file'], index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
-            #print(f"✅ Fallback: Results saved to {config['output_file']} (CSV format)")
+            fallback_file = config['output_file'].replace('.jsonl', '.csv') # Fallback to CSV
+            file_exists = os.path.exists(fallback_file)
+            # Try to append to CSV as a last resort
+            new_df.to_csv(fallback_file, index=False, mode='a', header=not file_exists, quoting=csv.QUOTE_MINIMAL)
+            print(f"✅ Fallback: Results saved to {fallback_file} (CSV format)")
         except Exception as e2:
-            print(f"❌ Critical error: Could not save results: {e2}")
+            print(f"❌ Critical error: Could not save results even with fallback: {e2}")
+
 
 def merge_domain_records(existing_df, new_df):
     """Merge new domain records with existing ones, updating fields that have new data"""
     if existing_df.empty:
         return new_df
-    
+
     if new_df.empty:
         return existing_df
-    
+
     # Ensure both DataFrames have the same columns
     all_cols = list(set(existing_df.columns) | set(new_df.columns))
     for col in all_cols:
@@ -1126,18 +1199,18 @@ def merge_domain_records(existing_df, new_df):
             existing_df[col] = "NA"
         if col not in new_df.columns:
             new_df[col] = "NA"
-    
+
     # Reorder columns to match
     existing_df = existing_df[all_cols]
     new_df = new_df[all_cols]
-    
+
     # Create a merged DataFrame
     merged_df = existing_df.copy()
-    
+
     for _, new_row in new_df.iterrows():
         domain = new_row['Domain']
         existing_mask = merged_df['Domain'] == domain
-        
+
         if existing_mask.any():
             # Update existing record - only update fields that are not "NA" or "disabled" in new data
             existing_idx = merged_df[existing_mask].index[0]
@@ -1145,25 +1218,25 @@ def merge_domain_records(existing_df, new_df):
                 if col != 'Domain':  # Don't update the domain name itself
                     new_value = new_row[col]
                     # Update if new value is not NA/disabled and is different from existing
-                    if (new_value not in ["NA", "disabled", ""] and 
-                        str(new_value).strip() != "" and 
+                    if (new_value not in ["NA", "disabled", ""] and
+                        str(new_value).strip() != "" and
                         new_value != merged_df.loc[existing_idx, col]):
                         merged_df.loc[existing_idx, col] = new_value
         else:
             # Add new record
             merged_df = pd.concat([merged_df, new_row.to_frame().T], ignore_index=True)
-    
+
     return merged_df
 
 # ---------- Main Execution Function ----------
 async def main(preset: str = "balanced", custom_config: dict = None):
     """Main execution function with preset support"""
     config = get_config(preset)
-    
+
     # Apply custom configuration overrides if provided
     if custom_config:
         config.update(custom_config)
-    
+
     print(f"🚀 Starting WordPress Domain Analysis with '{preset}' preset")
     print(f"📋 Configuration:")
     print(f"   • Max Concurrency: {config['MAX_CONCURRENCY']}")
@@ -1172,7 +1245,9 @@ async def main(preset: str = "balanced", custom_config: dict = None):
     print(f"   • Output Format: {config.get('OUTPUT_FORMAT', 'csv').upper()}")
     print(f"   • Update Existing Records: {'Yes' if config.get('UPDATE_EXISTING_RECORDS', True) else 'No'}")
     print(f"   • Force Reprocess: {'Yes' if config.get('FORCE_REPROCESS', False) else 'No'}")
-    
+    print(f"   • Output Compression: {config.get('OUTPUT_COMPRESSION')}")
+
+
     # Show enabled features
     enabled_features = []
     if config['ENABLE_DNS_MX']: enabled_features.append("DNS MX")
@@ -1180,16 +1255,18 @@ async def main(preset: str = "balanced", custom_config: dict = None):
     if config['ENABLE_CRAWLING']: enabled_features.append("Crawling")
     if config['ENABLE_WORDPRESS_API'] and config['ENABLE_POSTS_API']: enabled_features.append("Posts API")
     if config['ENABLE_WORDPRESS_API'] and config['ENABLE_PAGES_API']: enabled_features.append("Pages API")
-    print(f"   • Features: {', '.join(enabled_features)}")
-    
+    print(f"   🔧 Features enabled: {', '.join(enabled_features)}")
+
     print(f"   • Shutdown file: {config['shutdown_file']} (create this file to stop gracefully)")
     print()
-    
+
     domains = validate_and_load_data(config['input_file'])
     await process_domains(domains, config)
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
+    import asyncio
+    # Run the async main function
     asyncio.run(main("balanced", {"ENABLE_PAGES_API": True}))
 
     # Run 1: Basic info only
@@ -1198,5 +1275,5 @@ if __name__ == "__main__":
 # Run 2: Add WordPress Posts
 #await main("balanced", {"ENABLE_WHOIS": False, "ENABLE_CRAWLING": False, "ENABLE_PAGES_API": False})
 
-# Run 3: Add WordPress Pages  
+# Run 3: Add WordPress Pages
 #await main("balanced", {"ENABLE_WHOIS": False, "ENABLE_CRAWLING": False, "ENABLE_POSTS_API": False})
