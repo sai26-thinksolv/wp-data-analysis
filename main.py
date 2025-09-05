@@ -1265,10 +1265,8 @@ async def main(preset: str = "balanced", custom_config: dict = None):
 
 # ---------- Entry Point ----------
 if __name__ == "__main__":
-    import asyncio
-    # Run the async main function
-    asyncio.run(main("balanced", {"ENABLE_PAGES_API": True}))
-
+    # Removed asyncio.run() and await main directly
+    await main("balanced", {"ENABLE_PAGES_API": True, "input_file": "/content/wp-data-analysis/Input_csv_Files/File_1.csv", "OUTPUT_FORMAT": "jsonl"})
     # Run 1: Basic info only
 #await main("balanced", {"ENABLE_WORDPRESS_API": False})
 
